@@ -120,6 +120,7 @@ const server = http.createServer(async (req, res) => {
   <script>
     (function () {
       var payload = ${JSON.stringify(payload)};
+      var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
 
       if (!window.opener || window.opener.closed) {
         document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
@@ -127,9 +128,15 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        window.opener.postMessage(payload, ${JSON.stringify(SITE_ORIGIN)});
-        document.body.innerText = "OAuth erfolgreich. Token gesendet.";
-        setTimeout(function () { window.close(); }, 700);
+        console.log("PAYLOAD TO DECAP:", payload);
+        document.body.innerText = "Sende an Decap: " + payload.slice(0, 80) + "...";
+        window.opener.postMessage(payload, targetOrigin);
+
+        setTimeout(function () {
+          document.body.innerText = "OAuth erfolgreich. Token gesendet.";
+          window.close();
+        }, 1200);
+
         return;
       } catch (e) {
         document.body.innerText = "postMessage error: " + e.message;
