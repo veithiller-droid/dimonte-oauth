@@ -104,7 +104,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       const token = data.access_token;
-      const payload = `authorization:github:success:${JSON.stringify({
+
+      // klassische Decap-String-Message
+      const payloadString = `authorization:github:success:${JSON.stringify({
         token,
         provider: 'github',
       })}`;
@@ -119,40 +121,57 @@ const server = http.createServer(async (req, res) => {
 <body>
   <script>
     (function () {
-  var payload = ${JSON.stringify(payload)};
-  var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
-  var tries = 0;
-  var maxTries = 10;
+      var token = ${JSON.stringify(token)};
+      var provider = "github";
+      var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
 
-  if (!window.opener || window.opener.closed) {
-    document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
-    return;
-  }
+      // 1) Decap klassisch erwarteter String
+      var payloadString = "authorization:github:success:" + JSON.stringify({
+        token: token,
+        provider: provider
+      });
 
-  document.body.innerText = "OAuth erfolgreich. Sende Token an Decap...";
+      // 2) Fallback-Objekt (für inkompatible Listener/Versionen)
+      var payloadObject = {
+        type: "authorization:github:success",
+        token: token,
+        provider: provider
+      };
 
-  var timer = setInterval(function () {
-    tries++;
+      var tries = 0;
+      var maxTries = 12;
 
-    try {
-      // exakt an deine Domain
-      window.opener.postMessage(payload, targetOrigin);
+      if (!window.opener || window.opener.closed) {
+        document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
+        return;
+      }
 
-      // Debug-Zeile: zusätzlich wildcard, falls Origin intern anders aufgelöst wird
-      window.opener.postMessage(payload, '*');
-    } catch (e) {
-      document.body.innerText = "postMessage error: " + e.message;
-      clearInterval(timer);
-      return;
-    }
+      document.body.innerText = "OAuth erfolgreich. Sende Token an Decap...";
 
-    if (tries >= maxTries) {
-      clearInterval(timer);
-      document.body.innerText = "Token mehrfach gesendet. Fenster schließt...";
-      setTimeout(function () { window.close(); }, 1000);
-    }
-  }, 300);
-})();
+      var timer = setInterval(function () {
+        tries++;
+
+        try {
+          // Exakte Origin
+          window.opener.postMessage(payloadString, targetOrigin);
+          window.opener.postMessage(payloadObject, targetOrigin);
+
+          // Debug-/Fallback: falls Origin intern anders aufgelöst wird
+          window.opener.postMessage(payloadString, "*");
+          window.opener.postMessage(payloadObject, "*");
+        } catch (e) {
+          clearInterval(timer);
+          document.body.innerText = "postMessage error: " + e.message;
+          return;
+        }
+
+        if (tries >= maxTries) {
+          clearInterval(timer);
+          document.body.innerText = "Token mehrfach gesendet. Fenster schließt...";
+          setTimeout(function () { window.close(); }, 1200);
+        }
+      }, 300);
+    })();
   </script>
 </body>
 </html>`);
