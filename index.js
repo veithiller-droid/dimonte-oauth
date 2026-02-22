@@ -6,12 +6,22 @@ const CLIENT_ID = (process.env.GITHUB_CLIENT_ID || '').trim();
 const CLIENT_SECRET = (process.env.GITHUB_CLIENT_SECRET || '').trim();
 const PORT = process.env.PORT || 3000;
 
+const SITE_ORIGIN = 'https://dimontehypnose.de';
+const OAUTH_BASE_URL = 'https://miraculous-analysis-production-167a.up.railway.app';
+const CALLBACK_URL = `${OAUTH_BASE_URL}/callback`;
+
 function httpsPost(options, body) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode,
+          body: data,
+          headers: res.headers,
+        })
+      );
     });
     req.on('error', reject);
     if (body) req.write(body);
@@ -22,8 +32,8 @@ function httpsPost(options, body) {
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
 
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', 'https://dimontehypnose.de');
+  // CORS (Decap -> OAuth proxy)
+  res.setHeader('Access-Control-Allow-Origin', SITE_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -44,17 +54,17 @@ const server = http.createServer(async (req, res) => {
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       scope: 'repo,user',
-      redirect_uri: 'https://miraculous-analysis-production-167a.up.railway.app/callback'
+      redirect_uri: CALLBACK_URL,
     });
 
     res.writeHead(302, {
-      Location: `https://github.com/login/oauth/authorize?${params.toString()}`
+      Location: `https://github.com/login/oauth/authorize?${params.toString()}`,
     });
     res.end();
     return;
   }
 
-  // Step 2: GitHub callback → exchange code for token
+  // Step 2: GitHub callback -> exchange code for token
   if (parsed.pathname === '/callback') {
     const code = parsed.query.code;
 
@@ -68,19 +78,22 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.stringify({
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        code
+        code,
       });
 
-      const result = await httpsPost({
-        hostname: 'github.com',
-        path: '/login/oauth/access_token',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Content-Length': Buffer.byteLength(body)
-        }
-      }, body);
+      const result = await httpsPost(
+        {
+          hostname: 'github.com',
+          path: '/login/oauth/access_token',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+        },
+        body
+      );
 
       const data = JSON.parse(result.body || '{}');
 
@@ -91,16 +104,40 @@ const server = http.createServer(async (req, res) => {
       }
 
       const token = data.access_token;
+      const payload = `authorization:github:success:${JSON.stringify({
+        token,
+        provider: 'github',
+      })}`;
 
-      // Return token to CMS via postMessage
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html><html><body><script>
-        window.opener.postMessage(
-          'authorization:github:success:${JSON.stringify({ token, provider: 'github' })}',
-          'https://dimontehypnose.de'
-        );
-        window.close();
-      </script></body></html>`);
+      res.end(`<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>OAuth Callback</title>
+</head>
+<body>
+  <script>
+    (function () {
+      var payload = ${JSON.stringify(payload)};
+      var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
+
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.postMessage(payload, targetOrigin);
+          window.close();
+          return;
+        } catch (e) {
+          document.body.innerText = 'postMessage error: ' + e.message;
+          return;
+        }
+      }
+
+      document.body.innerText = 'OAuth login erfolgreich, aber kein opener-Fenster gefunden (window.opener = null). Bitte Admin-Seite neu laden und Login erneut aus dem Decap-Popup starten.';
+    })();
+  </script>
+</body>
+</html>`);
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('OAuth error: ' + e.message);
@@ -112,4 +149,6 @@ const server = http.createServer(async (req, res) => {
   res.end('DiMonte OAuth Proxy running');
 });
 
-server.listen(PORT, () => console.log(`OAuth proxy running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`OAuth proxy running on port ${PORT}`);
+});
