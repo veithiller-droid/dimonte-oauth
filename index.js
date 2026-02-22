@@ -2,8 +2,8 @@ const http = require('http');
 const https = require('https');
 const url = require('url');
 
-const CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
+const CLIENT_ID = (process.env.GITHUB_CLIENT_ID || '').trim();
+const CLIENT_SECRET = (process.env.GITHUB_CLIENT_SECRET || '').trim();
 const PORT = process.env.PORT || 3000;
 
 function httpsPost(options, body) {
@@ -33,14 +33,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OAuth env vars missing (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)');
+    return;
+  }
+
   // Step 1: Redirect to GitHub
   if (parsed.pathname === '/auth') {
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       scope: 'repo,user',
-      redirect_uri: `https://miraculous-analysis-production-167a.up.railway.app/callback`
+      redirect_uri: 'https://miraculous-analysis-production-167a.up.railway.app/callback'
     });
-    res.writeHead(302, { Location: `https://github.com/login/oauth/authorize?${params}` });
+
+    res.writeHead(302, {
+      Location: `https://github.com/login/oauth/authorize?${params.toString()}`
+    });
     res.end();
     return;
   }
@@ -48,35 +57,58 @@ const server = http.createServer(async (req, res) => {
   // Step 2: GitHub callback → exchange code for token
   if (parsed.pathname === '/callback') {
     const code = parsed.query.code;
+
     if (!code) {
-      res.writeHead(400);
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Missing code');
       return;
     }
+
     try {
-      const body = JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code });
+      const body = JSON.stringify({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        code
+      });
+
       const result = await httpsPost({
         hostname: 'github.com',
         path: '/login/oauth/access_token',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
       }, body);
-      const data = JSON.parse(result.body);
+
+      const data = JSON.parse(result.body || '{}');
+
+      if (!data.access_token) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(`OAuth token exchange failed: ${result.body}`);
+        return;
+      }
+
       const token = data.access_token;
+
       // Return token to CMS via postMessage
-      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`<!DOCTYPE html><html><body><script>
-        window.opener.postMessage('authorization:github:success:${JSON.stringify({token, provider:'github'})}', 'https://dimontehypnose.de');
+        window.opener.postMessage(
+          'authorization:github:success:${JSON.stringify({ token, provider: 'github' })}',
+          'https://dimontehypnose.de'
+        );
         window.close();
       </script></body></html>`);
-    } catch(e) {
-      res.writeHead(500);
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('OAuth error: ' + e.message);
     }
     return;
   }
 
-  res.writeHead(200);
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('DiMonte OAuth Proxy running');
 });
 
