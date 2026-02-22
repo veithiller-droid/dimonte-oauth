@@ -1,0 +1,83 @@
+const http = require('http');
+const https = require('https');
+const url = require('url');
+
+const CLIENT_ID = process.env.GITHUB_CLIENT_ID;
+const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
+const PORT = process.env.PORT || 3000;
+
+function httpsPost(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const parsed = url.parse(req.url, true);
+
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', 'https://dimontehypnose.de');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+
+  // Step 1: Redirect to GitHub
+  if (parsed.pathname === '/auth') {
+    const params = new URLSearchParams({
+      client_id: CLIENT_ID,
+      scope: 'repo,user',
+      redirect_uri: `https://dimontehypnose-cms.up.railway.app/callback`
+    });
+    res.writeHead(302, { Location: `https://github.com/login/oauth/authorize?${params}` });
+    res.end();
+    return;
+  }
+
+  // Step 2: GitHub callback → exchange code for token
+  if (parsed.pathname === '/callback') {
+    const code = parsed.query.code;
+    if (!code) {
+      res.writeHead(400);
+      res.end('Missing code');
+      return;
+    }
+    try {
+      const body = JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code });
+      const result = await httpsPost({
+        hostname: 'github.com',
+        path: '/login/oauth/access_token',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      }, body);
+      const data = JSON.parse(result.body);
+      const token = data.access_token;
+      // Return token to CMS via postMessage
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html><html><body><script>
+        window.opener.postMessage('authorization:github:success:${JSON.stringify({token, provider:'github'})}', 'https://dimontehypnose.de');
+        window.close();
+      </script></body></html>`);
+    } catch(e) {
+      res.writeHead(500);
+      res.end('OAuth error: ' + e.message);
+    }
+    return;
+  }
+
+  res.writeHead(200);
+  res.end('DiMonte OAuth Proxy running');
+});
+
+server.listen(PORT, () => console.log(`OAuth proxy running on port ${PORT}`));
