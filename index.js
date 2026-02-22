@@ -38,7 +38,7 @@ const server = http.createServer(async (req, res) => {
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       scope: 'repo,user',
-      redirect_uri: `https://dimontehypnose-cms.up.railway.app/callback`
+      redirect_uri: `https://miraculous-analysis-production-167a.up.railway.app/callback`
     });
     res.writeHead(302, { Location: `https://github.com/login/oauth/authorize?${params}` });
     res.end();
