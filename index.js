@@ -7,6 +7,7 @@ const CLIENT_SECRET = (process.env.GITHUB_CLIENT_SECRET || '').trim();
 const PORT = process.env.PORT || 3000;
 
 const SITE_ORIGIN = 'https://dimontehypnose.de';
+const SITE_ORIGIN_WWW = 'https://www.dimontehypnose.de';
 const OAUTH_BASE_URL = 'https://miraculous-analysis-production-167a.up.railway.app';
 const CALLBACK_URL = `${OAUTH_BASE_URL}/callback`;
 
@@ -120,20 +121,37 @@ const server = http.createServer(async (req, res) => {
   <script>
     (function () {
       var payload = ${JSON.stringify(payload)};
-      var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
+      var target1 = ${JSON.stringify(SITE_ORIGIN)};
+      var target2 = ${JSON.stringify(SITE_ORIGIN_WWW)};
+      var sent = false;
+      var errors = [];
 
-      if (window.opener && !window.opener.closed) {
-        try {
-          window.opener.postMessage(payload, targetOrigin);
-          window.close();
-          return;
-        } catch (e) {
-          document.body.innerText = 'postMessage error: ' + e.message;
-          return;
-        }
+      if (!window.opener || window.opener.closed) {
+        document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
+        return;
       }
 
-      document.body.innerText = 'OAuth login erfolgreich, aber kein opener-Fenster gefunden (window.opener = null). Bitte Admin-Seite neu laden und Login erneut aus dem Decap-Popup starten.';
+      try {
+        window.opener.postMessage(payload, target1);
+        sent = true;
+      } catch (e) {
+        errors.push("non-www: " + e.message);
+      }
+
+      try {
+        window.opener.postMessage(payload, target2);
+        sent = true;
+      } catch (e) {
+        errors.push("www: " + e.message);
+      }
+
+      if (sent) {
+        document.body.innerText = "OAuth erfolgreich. Token gesendet.";
+        setTimeout(function () { window.close(); }, 700);
+        return;
+      }
+
+      document.body.innerText = "OAuth erfolgreich, aber postMessage fehlgeschlagen. " + errors.join(" | ");
     })();
   </script>
 </body>
