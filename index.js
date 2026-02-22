@@ -1,6 +1,7 @@
 const http = require('http');
 const https = require('https');
 const url = require('url');
+const crypto = require('crypto');
 
 const CLIENT_ID = (process.env.GITHUB_CLIENT_ID || '').trim();
 const CLIENT_SECRET = (process.env.GITHUB_CLIENT_SECRET || '').trim();
@@ -39,6 +40,25 @@ function safeJsonParse(str) {
   }
 }
 
+function randomState() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .map((v) => {
+        const i = v.indexOf('=');
+        if (i === -1) return [v, ''];
+        return [v.slice(0, i), decodeURIComponent(v.slice(i + 1))];
+      })
+  );
+}
+
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
 
@@ -70,46 +90,69 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Step 1: Redirect to GitHub (IMPORTANT: forward state)
+  // Step 1: Decap helper-style redirect to GitHub (helper generates and stores state)
   if (parsed.pathname === '/auth') {
-    const state = (parsed.query.state || '').toString();
+    const provider = (parsed.query.provider || 'github').toString();
+    const siteId = (parsed.query.site_id || '').toString();
+    const requestedScope = (parsed.query.scope || 'repo').toString();
+
+    if (provider !== 'github') {
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Unsupported provider');
+      return;
+    }
+
+    const state = randomState();
 
     console.log('[AUTH] hit');
-    console.log('[AUTH] state present =', !!state);
-    console.log('[AUTH] state =', state || '(none)');
+    console.log('[AUTH] provider =', provider);
+    console.log('[AUTH] site_id =', siteId || '(none)');
+    console.log('[AUTH] scope =', requestedScope);
+    console.log('[AUTH] generated state =', state);
 
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
-      scope: 'repo,user',
+      scope: requestedScope,
       redirect_uri: CALLBACK_URL,
+      state,
     });
-
-    // Forward Decap state if present (critical for handshake)
-    if (state) {
-      params.set('state', state);
-    }
 
     const ghUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
     console.log('[AUTH] redirect ->', ghUrl);
+
+    res.setHeader(
+      'Set-Cookie',
+      `decap_oauth_state=${encodeURIComponent(state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`
+    );
 
     res.writeHead(302, { Location: ghUrl });
     res.end();
     return;
   }
 
-  // Step 2: GitHub callback -> exchange code for token -> postMessage to opener
+  // Step 2: GitHub callback -> validate state cookie -> exchange code for token -> postMessage to opener
   if (parsed.pathname === '/callback') {
     const code = (parsed.query.code || '').toString();
     const state = (parsed.query.state || '').toString();
+    const cookies = parseCookies(req);
+    const cookieState = (cookies.decap_oauth_state || '').toString();
 
     console.log('[CALLBACK] hit');
     console.log('[CALLBACK] code present =', !!code);
     console.log('[CALLBACK] state present =', !!state);
     console.log('[CALLBACK] state =', state || '(none)');
+    console.log('[CALLBACK] cookie state present =', !!cookieState);
 
     if (!code) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Missing code');
+      return;
+    }
+
+    if (!state || !cookieState || state !== cookieState) {
+      console.error('[CALLBACK] Invalid state', { state, cookieState });
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Invalid state');
       return;
     }
 
@@ -149,7 +192,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       // IMPORTANT: include state in success payload for Decap
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': 'decap_oauth_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
+      });
+
       res.end(`<!DOCTYPE html>
 <html lang="de">
 <head>
