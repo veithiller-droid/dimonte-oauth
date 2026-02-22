@@ -23,10 +23,20 @@ function httpsPost(options, body) {
         })
       );
     });
+
     req.on('error', reject);
+
     if (body) req.write(body);
     req.end();
   });
+}
+
+function safeJsonParse(str) {
+  try {
+    return JSON.parse(str);
+  } catch {
+    return null;
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -43,39 +53,59 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Basic request log
+  console.log(`[REQ] ${req.method} ${parsed.pathname}`, parsed.query || {});
+
   if (!CLIENT_ID || !CLIENT_SECRET) {
+    console.error('[BOOT] Missing OAuth env vars');
     res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('OAuth env vars missing (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)');
     return;
   }
 
-  // Step 1: Redirect to GitHub (IMPORTANT: preserve Decap state)
+  // Health / root
+  if (parsed.pathname === '/' || parsed.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('DiMonte OAuth Proxy running');
+    return;
+  }
+
+  // Step 1: Redirect to GitHub (IMPORTANT: forward state)
   if (parsed.pathname === '/auth') {
-    const incomingState = parsed.query.state ? String(parsed.query.state) : '';
-    const incomingScope = parsed.query.scope ? String(parsed.query.scope) : 'repo,user';
+    const state = (parsed.query.state || '').toString();
+
+    console.log('[AUTH] hit');
+    console.log('[AUTH] state present =', !!state);
+    console.log('[AUTH] state =', state || '(none)');
 
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
-      scope: incomingScope,
+      scope: 'repo,user',
       redirect_uri: CALLBACK_URL,
     });
 
-    // Decap uses state for matching the auth flow
-    if (incomingState) {
-      params.set('state', incomingState);
+    // Forward Decap state if present (critical for handshake)
+    if (state) {
+      params.set('state', state);
     }
 
-    res.writeHead(302, {
-      Location: `https://github.com/login/oauth/authorize?${params.toString()}`,
-    });
+    const ghUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
+    console.log('[AUTH] redirect ->', ghUrl);
+
+    res.writeHead(302, { Location: ghUrl });
     res.end();
     return;
   }
 
-  // Step 2: GitHub callback -> exchange code for token
+  // Step 2: GitHub callback -> exchange code for token -> postMessage to opener
   if (parsed.pathname === '/callback') {
-    const code = parsed.query.code;
-    const state = parsed.query.state ? String(parsed.query.state) : '';
+    const code = (parsed.query.code || '').toString();
+    const state = (parsed.query.state || '').toString();
+
+    console.log('[CALLBACK] hit');
+    console.log('[CALLBACK] code present =', !!code);
+    console.log('[CALLBACK] state present =', !!state);
+    console.log('[CALLBACK] state =', state || '(none)');
 
     if (!code) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -88,6 +118,7 @@ const server = http.createServer(async (req, res) => {
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
         code,
+        redirect_uri: CALLBACK_URL,
       });
 
       const result = await httpsPost(
@@ -104,52 +135,48 @@ const server = http.createServer(async (req, res) => {
         body
       );
 
-      const data = JSON.parse(result.body || '{}');
+      console.log('[CALLBACK] token exchange status =', result.status);
 
-      if (!data.access_token) {
+      const data = safeJsonParse(result.body) || {};
+      const token = data.access_token;
+
+      console.log('[CALLBACK] token received =', !!token);
+      if (!token) {
+        console.error('[CALLBACK] token exchange failed body =', result.body);
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(`OAuth token exchange failed: ${result.body}`);
         return;
       }
 
-      const token = data.access_token;
-
-      // Decap's classic expected success message (string)
-      const payloadString = `authorization:github:success:${JSON.stringify({
-        token,
-        provider: 'github',
-      })}`;
-
+      // IMPORTANT: include state in success payload for Decap
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OAuth Callback</title>
 </head>
-<body>
+<body style="font-family: system-ui, sans-serif; padding: 16px;">
+  <div id="status">OAuth erfolgreich. Bereite Übergabe an Decap vor…</div>
+
   <script>
     (function () {
       var token = ${JSON.stringify(token)};
       var provider = "github";
       var state = ${JSON.stringify(state)};
       var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
+      var statusEl = document.getElementById("status");
 
-      // 1) Classic Decap string format
+      // Decap classic success string
       var payloadString = "authorization:github:success:" + JSON.stringify({
         token: token,
-        provider: provider
+        provider: provider,
+        state: state
       });
 
-      // 2) Object fallback (some listeners prefer structured messages)
+      // Fallback object payload
       var payloadObject = {
-        type: "authorization:github:success",
-        token: token,
-        provider: provider
-      };
-
-      // 3) State-aware object fallback (for stricter listeners)
-      var payloadObjectWithState = {
         type: "authorization:github:success",
         token: token,
         provider: provider,
@@ -160,11 +187,11 @@ const server = http.createServer(async (req, res) => {
       var maxTries = 12;
 
       if (!window.opener || window.opener.closed) {
-        document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
+        statusEl.textContent = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
         return;
       }
 
-      document.body.innerText = "OAuth erfolgreich. Sende Token an Decap..." + (state ? " (state vorhanden)" : " (kein state)");
+      statusEl.textContent = "OAuth erfolgreich. Sende Token + state an Decap...";
 
       var timer = setInterval(function () {
         tries++;
@@ -173,22 +200,22 @@ const server = http.createServer(async (req, res) => {
           // Exact origin (preferred)
           window.opener.postMessage(payloadString, targetOrigin);
           window.opener.postMessage(payloadObject, targetOrigin);
-          window.opener.postMessage(payloadObjectWithState, targetOrigin);
 
-          // Wildcard fallback (debug/compat)
+          // Fallback for debugging / origin mismatches
           window.opener.postMessage(payloadString, "*");
           window.opener.postMessage(payloadObject, "*");
-          window.opener.postMessage(payloadObjectWithState, "*");
         } catch (e) {
           clearInterval(timer);
-          document.body.innerText = "postMessage error: " + e.message;
+          statusEl.textContent = "postMessage error: " + e.message;
           return;
         }
 
         if (tries >= maxTries) {
           clearInterval(timer);
-          document.body.innerText = "Token mehrfach gesendet. Fenster schließt...";
-          setTimeout(function () { window.close(); }, 1200);
+          statusEl.textContent = "Token + state mehrfach gesendet. Fenster schließt...";
+          setTimeout(function () {
+            window.close();
+          }, 1200);
         }
       }, 300);
     })();
@@ -196,16 +223,21 @@ const server = http.createServer(async (req, res) => {
 </body>
 </html>`);
     } catch (e) {
+      console.error('[CALLBACK] OAuth error:', e);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('OAuth error: ' + e.message);
     }
     return;
   }
 
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('DiMonte OAuth Proxy running');
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Not found');
 });
 
 server.listen(PORT, () => {
   console.log(`OAuth proxy running on port ${PORT}`);
+  console.log('[BOOT] SITE_ORIGIN =', SITE_ORIGIN);
+  console.log('[BOOT] CALLBACK_URL =', CALLBACK_URL);
+  console.log('[BOOT] CLIENT_ID present =', !!CLIENT_ID);
+  console.log('[BOOT] CLIENT_SECRET present =', !!CLIENT_SECRET);
 });
