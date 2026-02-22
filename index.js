@@ -49,13 +49,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Step 1: Redirect to GitHub
+  // Step 1: Redirect to GitHub (IMPORTANT: preserve Decap state)
   if (parsed.pathname === '/auth') {
+    const incomingState = parsed.query.state ? String(parsed.query.state) : '';
+    const incomingScope = parsed.query.scope ? String(parsed.query.scope) : 'repo,user';
+
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
-      scope: 'repo,user',
+      scope: incomingScope,
       redirect_uri: CALLBACK_URL,
     });
+
+    // Decap uses state for matching the auth flow
+    if (incomingState) {
+      params.set('state', incomingState);
+    }
 
     res.writeHead(302, {
       Location: `https://github.com/login/oauth/authorize?${params.toString()}`,
@@ -67,6 +75,7 @@ const server = http.createServer(async (req, res) => {
   // Step 2: GitHub callback -> exchange code for token
   if (parsed.pathname === '/callback') {
     const code = parsed.query.code;
+    const state = parsed.query.state ? String(parsed.query.state) : '';
 
     if (!code) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -105,7 +114,7 @@ const server = http.createServer(async (req, res) => {
 
       const token = data.access_token;
 
-      // klassische Decap-String-Message
+      // Decap's classic expected success message (string)
       const payloadString = `authorization:github:success:${JSON.stringify({
         token,
         provider: 'github',
@@ -123,19 +132,28 @@ const server = http.createServer(async (req, res) => {
     (function () {
       var token = ${JSON.stringify(token)};
       var provider = "github";
+      var state = ${JSON.stringify(state)};
       var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
 
-      // 1) Decap klassisch erwarteter String
+      // 1) Classic Decap string format
       var payloadString = "authorization:github:success:" + JSON.stringify({
         token: token,
         provider: provider
       });
 
-      // 2) Fallback-Objekt (für inkompatible Listener/Versionen)
+      // 2) Object fallback (some listeners prefer structured messages)
       var payloadObject = {
         type: "authorization:github:success",
         token: token,
         provider: provider
+      };
+
+      // 3) State-aware object fallback (for stricter listeners)
+      var payloadObjectWithState = {
+        type: "authorization:github:success",
+        token: token,
+        provider: provider,
+        state: state
       };
 
       var tries = 0;
@@ -146,19 +164,21 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      document.body.innerText = "OAuth erfolgreich. Sende Token an Decap...";
+      document.body.innerText = "OAuth erfolgreich. Sende Token an Decap..." + (state ? " (state vorhanden)" : " (kein state)");
 
       var timer = setInterval(function () {
         tries++;
 
         try {
-          // Exakte Origin
+          // Exact origin (preferred)
           window.opener.postMessage(payloadString, targetOrigin);
           window.opener.postMessage(payloadObject, targetOrigin);
+          window.opener.postMessage(payloadObjectWithState, targetOrigin);
 
-          // Debug-/Fallback: falls Origin intern anders aufgelöst wird
+          // Wildcard fallback (debug/compat)
           window.opener.postMessage(payloadString, "*");
           window.opener.postMessage(payloadObject, "*");
+          window.opener.postMessage(payloadObjectWithState, "*");
         } catch (e) {
           clearInterval(timer);
           document.body.innerText = "postMessage error: " + e.message;
