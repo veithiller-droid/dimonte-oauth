@@ -119,30 +119,40 @@ const server = http.createServer(async (req, res) => {
 <body>
   <script>
     (function () {
-      var payload = ${JSON.stringify(payload)};
-      var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
+  var payload = ${JSON.stringify(payload)};
+  var targetOrigin = ${JSON.stringify(SITE_ORIGIN)};
+  var tries = 0;
+  var maxTries = 10;
 
-      if (!window.opener || window.opener.closed) {
-        document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
-        return;
-      }
+  if (!window.opener || window.opener.closed) {
+    document.body.innerText = "OAuth erfolgreich, aber kein opener-Fenster gefunden (window.opener = null).";
+    return;
+  }
 
-      try {
-        console.log("PAYLOAD TO DECAP:", payload);
-        document.body.innerText = "Sende an Decap: " + payload.slice(0, 80) + "...";
-        window.opener.postMessage(payload, targetOrigin);
+  document.body.innerText = "OAuth erfolgreich. Sende Token an Decap...";
 
-        setTimeout(function () {
-          document.body.innerText = "OAuth erfolgreich. Token gesendet.";
-          window.close();
-        }, 1200);
+  var timer = setInterval(function () {
+    tries++;
 
-        return;
-      } catch (e) {
-        document.body.innerText = "postMessage error: " + e.message;
-        return;
-      }
-    })();
+    try {
+      // exakt an deine Domain
+      window.opener.postMessage(payload, targetOrigin);
+
+      // Debug-Zeile: zusätzlich wildcard, falls Origin intern anders aufgelöst wird
+      window.opener.postMessage(payload, '*');
+    } catch (e) {
+      document.body.innerText = "postMessage error: " + e.message;
+      clearInterval(timer);
+      return;
+    }
+
+    if (tries >= maxTries) {
+      clearInterval(timer);
+      document.body.innerText = "Token mehrfach gesendet. Fenster schließt...";
+      setTimeout(function () { window.close(); }, 1000);
+    }
+  }, 300);
+})();
   </script>
 </body>
 </html>`);
